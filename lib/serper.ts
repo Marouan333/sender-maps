@@ -5,16 +5,41 @@ export interface PlaceLead {
   website: string | null;
 }
 
+// ── Geocode city to GPS coords (for Serper pagination) ────────────────────────
+
+async function getGpsCoords(city: string): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(city)}&format=json&limit=1`,
+      { headers: { 'User-Agent': 'sender-maps/1.0' } }
+    );
+    const json = await res.json();
+    if (!json[0]) return null;
+    const { lat, lon } = json[0];
+    // Serper ll format: @lat,lon,zoom
+    return `@${lat},${lon},14z`;
+  } catch {
+    return null;
+  }
+}
+
 // ── Serper.dev ────────────────────────────────────────────────────────────────
 
-async function serperMapsSearch(query: string, page = 1): Promise<PlaceLead[]> {
+async function serperMapsSearch(
+  query: string,
+  page = 1,
+  ll?: string
+): Promise<PlaceLead[]> {
+  const body: Record<string, unknown> = { q: query, page };
+  if (ll && page > 1) body.ll = ll;
+
   const res = await fetch('https://google.serper.dev/maps', {
     method: 'POST',
     headers: {
       'X-API-KEY': process.env.SERPER_API_KEY!,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ q: query, page }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) throw new Error(`Serper error ${res.status}: ${await res.text()}`);
@@ -36,10 +61,10 @@ async function serperMapsSearch(query: string, page = 1): Promise<PlaceLead[]> {
 
 // ── SerpAPI ───────────────────────────────────────────────────────────────────
 
-async function serpapiMapsSearch(query: string, start = 0): Promise<{
-  leads: PlaceLead[];
-  hasMore: boolean;
-}> {
+async function serpapiMapsSearch(
+  query: string,
+  start = 0
+): Promise<{ leads: PlaceLead[]; hasMore: boolean }> {
   const params = new URLSearchParams({
     engine: 'google_maps',
     q: query,
@@ -68,24 +93,28 @@ async function serpapiMapsSearch(query: string, start = 0): Promise<{
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/**
- * Fetch all map results for a business type + city.
- * Automatically picks the configured provider:
- *   SERPER_API_KEY  → Serper.dev  (up to 3 pages × ~20 results = ~60)
- *   SERPAPI_KEY     → SerpAPI     (paginated until no more results or 60 cap)
- */
 export async function fetchPlaces(city: string, businessType: string): Promise<PlaceLead[]> {
   const query = `${businessType} in ${city}`;
 
   if (process.env.SERPER_API_KEY) {
-    // Serper maps pagination requires GPS coords for page > 1 — single page only
-    return await serperMapsSearch(query, 1);
+    const ll = await getGpsCoords(city);
+    const all: PlaceLead[] = [];
+    for (let page = 1; page <= 5; page++) {
+      try {
+        const results = await serperMapsSearch(query, page, ll ?? undefined);
+        all.push(...results);
+        if (results.length < 10) break;
+      } catch {
+        break; // stop on error, return what we have
+      }
+    }
+    return all;
   }
 
   if (process.env.SERPAPI_KEY) {
     const all: PlaceLead[] = [];
     let start = 0;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 5; i++) {
       const { leads, hasMore } = await serpapiMapsSearch(query, start);
       all.push(...leads);
       if (!hasMore) break;

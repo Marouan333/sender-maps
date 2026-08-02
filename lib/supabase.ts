@@ -12,9 +12,12 @@ export function getSupabase(): SupabaseClient {
   return _client;
 }
 
-// Convenience alias kept for backwards compatibility
+// Proxy that preserves `this` binding on every method call
 export const supabase = new Proxy({} as SupabaseClient, {
   get(_target, prop) {
-    return (getSupabase() as never)[prop];
+    const client = getSupabase();
+    const value = (client as never)[prop];
+    if (typeof value === 'function') return (value as Function).bind(client);
+    return value;
   },
 });

@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
           phone: p.phone,
           address: p.address,
           website: p.website,
-          status: p.website ? 'skipped' : 'pending',
+          status: 'pending',
         }));
 
       if (newRows.length === 0) continue;

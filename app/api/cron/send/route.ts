@@ -25,10 +25,11 @@ function isWithinSendWindow(timezone: string): boolean {
 }
 
 export async function GET(req: NextRequest) {
-  // Protect the cron endpoint
+  // Protect the cron endpoint — accept secret via header OR query param
   if (CRON_SECRET) {
-    const auth = req.headers.get('authorization');
-    if (auth !== `Bearer ${CRON_SECRET}`) {
+    const header = req.headers.get('authorization');
+    const query = req.nextUrl.searchParams.get('secret');
+    if (header !== `Bearer ${CRON_SECRET}` && query !== CRON_SECRET) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
   }

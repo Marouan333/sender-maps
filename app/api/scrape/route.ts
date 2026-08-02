@@ -35,8 +35,14 @@ export async function POST(req: NextRequest) {
         .in('phone', phones);
 
       const existingPhones = new Set((existing ?? []).map((r) => r.phone));
+      const seenInBatch = new Set<string>();
       const newRows = withPhone
-        .filter((p) => !existingPhones.has(p.phone as string))
+        .filter((p) => {
+          const ph = p.phone as string;
+          if (existingPhones.has(ph) || seenInBatch.has(ph)) return false;
+          seenInBatch.add(ph);
+          return true;
+        })
         .map((p) => ({
           campaign_id,
           name: p.name,

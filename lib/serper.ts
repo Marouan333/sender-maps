@@ -78,14 +78,8 @@ export async function fetchPlaces(city: string, businessType: string): Promise<P
   const query = `${businessType} in ${city}`;
 
   if (process.env.SERPER_API_KEY) {
-    // Serper returns ~20 results per page; fetch up to 3 pages
-    const all: PlaceLead[] = [];
-    for (let page = 1; page <= 3; page++) {
-      const results = await serperMapsSearch(query, page);
-      all.push(...results);
-      if (results.length < 10) break; // last page was sparse — stop early
-    }
-    return all;
+    // Serper maps pagination requires GPS coords for page > 1 — single page only
+    return await serperMapsSearch(query, 1);
   }
 
   if (process.env.SERPAPI_KEY) {

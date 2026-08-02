@@ -24,24 +24,33 @@ export async function POST(req: NextRequest) {
       const places = await fetchPlaces(campaign.city, businessType);
       if (places.length === 0) continue;
 
-      const rows = places.map((p) => ({
-        campaign_id,
-        name: p.name,
-        phone: p.phone,
-        address: p.address,
-        website: p.website,
-        // Businesses that already have a website are skipped from sending
-        status: p.website ? 'skipped' : 'pending',
-      }));
+      // Filter out places with no phone, then check for existing phones
+      const withPhone = places.filter((p) => p.phone);
+      if (withPhone.length === 0) continue;
 
-      // Upsert: if the same place_id was already scraped, update it
-      const { error } = await supabase.from('leads').upsert(rows, {
-        onConflict: 'phone',
-        ignoreDuplicates: true,
-      });
+      const phones = withPhone.map((p) => p.phone as string);
+      const { data: existing } = await supabase
+        .from('leads')
+        .select('phone')
+        .in('phone', phones);
 
+      const existingPhones = new Set((existing ?? []).map((r) => r.phone));
+      const newRows = withPhone
+        .filter((p) => !existingPhones.has(p.phone as string))
+        .map((p) => ({
+          campaign_id,
+          name: p.name,
+          phone: p.phone,
+          address: p.address,
+          website: p.website,
+          status: p.website ? 'skipped' : 'pending',
+        }));
+
+      if (newRows.length === 0) continue;
+
+      const { error } = await supabase.from('leads').insert(newRows);
       if (error) errors.push(`${businessType}: ${error.message}`);
-      else totalInserted += rows.length;
+      else totalInserted += newRows.length;
     } catch (e) {
       errors.push(`${businessType}: ${(e as Error).message}`);
     }

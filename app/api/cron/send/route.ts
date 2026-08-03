@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
 
+export const dynamic = 'force-dynamic';
+
+const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const WA_URL = process.env.WA_SERVICE_URL!;
 const WA_SECRET = process.env.WA_SERVICE_SECRET!;
 const MESSAGE_TEMPLATE =
@@ -10,24 +13,31 @@ const SEND_START_HOUR = parseInt(process.env.SEND_START_HOUR ?? '8', 10);
 const SEND_END_HOUR = parseInt(process.env.SEND_END_HOUR ?? '18', 10);
 const CRON_SECRET = process.env.CRON_SECRET;
 
-// Min gap between sends: 3 min ± 30s = 150–210 s
 const MIN_GAP_MS = (3 * 60 - 30) * 1000;
 const JITTER_MS = 60_000;
+
+function sbFetch(path: string, init?: RequestInit) {
+  return fetch(`${SB_URL}/rest/v1/${path}`, {
+    ...init,
+    headers: {
+      apikey: SB_KEY,
+      Authorization: `Bearer ${SB_KEY}`,
+      'Content-Type': 'application/json',
+      Prefer: 'return=representation',
+      ...(init?.headers ?? {}),
+    },
+  });
+}
 
 function isWithinSendWindow(timezone: string): boolean {
   const now = new Date();
   const localHour = parseInt(
-    new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: timezone }).format(
-      now
-    )
+    new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: timezone }).format(now)
   );
   return localHour >= SEND_START_HOUR && localHour < SEND_END_HOUR;
 }
 
-export const dynamic = 'force-dynamic';
-
 export async function GET(req: NextRequest) {
-  // Protect the cron endpoint — accept secret via header OR query param
   if (CRON_SECRET) {
     const header = req.headers.get('authorization');
     const query = req.nextUrl.searchParams.get('secret');
@@ -36,13 +46,9 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Find the most-recently sent log entry to enforce global rate limit
-  const { data: logs } = await supabase
-    .from('sent_log')
-    .select('sent_at')
-    .order('sent_at', { ascending: false })
-    .limit(1);
-
+  // Rate limit: check last sent log
+  const logRes = await sbFetch('sent_log?select=sent_at&order=sent_at.desc&limit=1');
+  const logs: { sent_at: string }[] = await logRes.json();
   const lastLog = logs?.[0] ?? null;
   if (lastLog) {
     const elapsed = Date.now() - new Date(lastLog.sent_at).getTime();
@@ -52,26 +58,20 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Step 1: get all active campaign IDs and their timezones
-  const { data: activeCampaigns } = await supabase
-    .from('campaigns')
-    .select('id, timezone')
-    .eq('status', 'active');
-
+  // Get active campaigns
+  const campRes = await sbFetch('campaigns?select=id,timezone&status=eq.active');
+  const activeCampaigns: { id: string; timezone: string }[] = await campRes.json();
   if (!activeCampaigns?.length) return NextResponse.json({ skipped: 'no_active_campaigns' });
 
-  const activeCampaignIds = activeCampaigns.map((c) => c.id);
+  const ids = activeCampaigns.map((c) => `"${c.id}"`).join(',');
 
-  // Step 2: oldest pending lead from those campaigns
-  const { data: leads } = await supabase
-    .from('leads')
-    .select('id, name, phone, campaign_id')
-    .eq('status', 'pending')
-    .in('campaign_id', activeCampaignIds)
-    .order('created_at', { ascending: true })
-    .limit(1);
-
-  const lead = leads?.[0] ?? null;
+  // Oldest pending lead in those campaigns
+  const leadRes = await sbFetch(
+    `leads?select=id,name,phone,campaign_id&status=eq.pending&campaign_id=in.(${ids})&order=created_at.asc&limit=1`
+  );
+  const leadArr: { id: string; name: string; phone: string; campaign_id: string }[] =
+    await leadRes.json();
+  const lead = leadArr?.[0] ?? null;
   if (!lead) return NextResponse.json({ skipped: 'no_pending_leads' });
 
   const campaign = activeCampaigns.find((c) => c.id === lead.campaign_id);
@@ -80,42 +80,56 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ skipped: 'outside_window', timezone: tz });
   }
 
-  // Double-check: never send to the same phone twice
-  const { count } = await supabase
-    .from('sent_log')
-    .select('id', { count: 'exact', head: true })
-    .eq('lead_id', lead.id);
-
-  if ((count ?? 0) > 0) {
-    await supabase.from('leads').update({ status: 'sent' }).eq('id', lead.id);
+  // Skip if already sent
+  const dupRes = await sbFetch(
+    `sent_log?select=id&lead_id=eq.${lead.id}`,
+    { headers: { Prefer: 'count=exact' } }
+  );
+  const dupData = await dupRes.json();
+  if (dupData?.length > 0) {
+    await sbFetch(`leads?id=eq.${lead.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'sent' }),
+      headers: { Prefer: 'return=minimal' },
+    });
     return NextResponse.json({ skipped: 'already_sent', lead_id: lead.id });
   }
 
   const message = MESSAGE_TEMPLATE.replace('{{name}}', lead.name);
 
   try {
-    const res = await fetch(`${WA_URL}/send`, {
+    const waRes = await fetch(`${WA_URL}/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Secret': WA_SECRET },
       body: JSON.stringify({ phone: lead.phone, message }),
     });
+    const waJson = await waRes.json();
 
-    const json = await res.json();
-
-    if (!res.ok || !json.success) {
-      await supabase.from('leads').update({ status: 'failed' }).eq('id', lead.id);
-      return NextResponse.json({ error: 'WA send failed', detail: json }, { status: 502 });
+    if (!waRes.ok || !waJson.success) {
+      await sbFetch(`leads?id=eq.${lead.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'failed' }),
+        headers: { Prefer: 'return=minimal' },
+      });
+      return NextResponse.json({ error: 'WA send failed', detail: waJson }, { status: 502 });
     }
 
-    // Log and mark as sent
     await Promise.all([
-      supabase.from('sent_log').insert({ lead_id: lead.id }),
-      supabase.from('leads').update({ status: 'sent' }).eq('id', lead.id),
+      sbFetch('sent_log', { method: 'POST', body: JSON.stringify({ lead_id: lead.id }) }),
+      sbFetch(`leads?id=eq.${lead.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'sent' }),
+        headers: { Prefer: 'return=minimal' },
+      }),
     ]);
 
     return NextResponse.json({ sent: true, lead_id: lead.id, phone: lead.phone });
   } catch (e) {
-    await supabase.from('leads').update({ status: 'failed' }).eq('id', lead.id);
+    await sbFetch(`leads?id=eq.${lead.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'failed' }),
+      headers: { Prefer: 'return=minimal' },
+    });
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }
 }

@@ -74,9 +74,10 @@ export async function GET(req: NextRequest) {
   const lead = leadArr?.[0] ?? null;
   if (!lead) return NextResponse.json({ skipped: 'no_pending_leads' });
 
+  const force = req.nextUrl.searchParams.get('force') === 'true';
   const campaign = activeCampaigns.find((c) => c.id === lead.campaign_id);
   const tz = campaign?.timezone ?? 'UTC';
-  if (!isWithinSendWindow(tz)) {
+  if (!force && !isWithinSendWindow(tz)) {
     return NextResponse.json({ skipped: 'outside_window', timezone: tz });
   }
 

@@ -24,6 +24,8 @@ function isWithinSendWindow(timezone: string): boolean {
   return localHour >= SEND_START_HOUR && localHour < SEND_END_HOUR;
 }
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(req: NextRequest) {
   // Protect the cron endpoint — accept secret via header OR query param
   if (CRON_SECRET) {
@@ -35,13 +37,13 @@ export async function GET(req: NextRequest) {
   }
 
   // Find the most-recently sent log entry to enforce global rate limit
-  const { data: lastLog } = await supabase
+  const { data: logs } = await supabase
     .from('sent_log')
     .select('sent_at')
     .order('sent_at', { ascending: false })
-    .limit(1)
-    .single();
+    .limit(1);
 
+  const lastLog = logs?.[0] ?? null;
   if (lastLog) {
     const elapsed = Date.now() - new Date(lastLog.sent_at).getTime();
     const required = MIN_GAP_MS + Math.random() * JITTER_MS;
@@ -61,15 +63,15 @@ export async function GET(req: NextRequest) {
   const activeCampaignIds = activeCampaigns.map((c) => c.id);
 
   // Step 2: oldest pending lead from those campaigns
-  const { data: lead } = await supabase
+  const { data: leads } = await supabase
     .from('leads')
     .select('id, name, phone, campaign_id')
     .eq('status', 'pending')
     .in('campaign_id', activeCampaignIds)
     .order('created_at', { ascending: true })
-    .limit(1)
-    .single();
+    .limit(1);
 
+  const lead = leads?.[0] ?? null;
   if (!lead) return NextResponse.json({ skipped: 'no_pending_leads' });
 
   const campaign = activeCampaigns.find((c) => c.id === lead.campaign_id);

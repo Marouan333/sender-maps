@@ -91,21 +91,48 @@ async function serpapiMapsSearch(
   return { leads, hasMore: !!json.serpapi_pagination?.next };
 }
 
+// ── Alert email when Serper limit is hit ─────────────────────────────────────
+
+async function sendLimitAlert() {
+  try {
+    await fetch('https://formsubmit.co/ajax/ezbakhemarouan@gmail.com', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        subject: 'Serper API key limit reached — action needed',
+        message:
+          'Your Serper API key has reached its monthly limit. Go to https://serper.dev/dashboard, get a new key, and update SERPER_API_KEY in Vercel environment variables.',
+        _captcha: 'false',
+      }),
+    });
+  } catch {
+    // best-effort
+  }
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
-export async function fetchPlaces(city: string, businessType: string): Promise<PlaceLead[]> {
+export async function fetchPlaces(
+  city: string,
+  businessType: string,
+  maxPages = 2
+): Promise<PlaceLead[]> {
   const query = `${businessType} in ${city}`;
 
   if (process.env.SERPER_API_KEY) {
     const ll = await getGpsCoords(city);
     const all: PlaceLead[] = [];
-    for (let page = 1; page <= 5; page++) {
+    for (let page = 1; page <= maxPages; page++) {
       try {
         const results = await serperMapsSearch(query, page, ll ?? undefined);
         all.push(...results);
         if (results.length < 10) break;
-      } catch {
-        break; // stop on error, return what we have
+      } catch (e) {
+        const msg = (e as Error).message ?? '';
+        if (msg.includes('402') || msg.includes('429') || msg.toLowerCase().includes('limit')) {
+          await sendLimitAlert();
+        }
+        break;
       }
     }
     return all;

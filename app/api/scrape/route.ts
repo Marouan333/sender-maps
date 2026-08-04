@@ -5,7 +5,7 @@ import { fetchPlaces } from '@/lib/serper';
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
-  const { campaign_id } = await req.json();
+  const { campaign_id, max_pages } = await req.json();
   if (!campaign_id) return NextResponse.json({ error: 'campaign_id required' }, { status: 400 });
 
   const { data: campaign } = await supabase
@@ -21,11 +21,16 @@ export async function POST(req: NextRequest) {
 
   for (const businessType of campaign.business_types as string[]) {
     try {
-      const places = await fetchPlaces(campaign.city, businessType);
+      const places = await fetchPlaces(campaign.city, businessType, max_pages ?? 2);
       if (places.length === 0) continue;
 
-      // Filter out places with no phone, then check for existing phones
-      const withPhone = places.filter((p) => p.phone);
+      // Filter: French campaigns keep only mobiles (336/337); others keep all valid numbers
+      const isFrench = (campaign.timezone ?? '').includes('Paris');
+      const withPhone = places.filter((p) => {
+        if (!p.phone) return false;
+        if (isFrench) return p.phone.startsWith('336') || p.phone.startsWith('337');
+        return p.phone.length >= 7;
+      });
       if (withPhone.length === 0) continue;
 
       const phones = withPhone.map((p) => p.phone as string);

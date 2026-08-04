@@ -6,11 +6,12 @@ const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const WA_URL = process.env.WA_SERVICE_URL!;
 const WA_SECRET = process.env.WA_SERVICE_SECRET!;
-const MESSAGE_TEMPLATE =
+const MESSAGE_TEMPLATE_FR =
   process.env.MESSAGE_TEMPLATE ??
   "Bonjour {{name}},\n\nJ'ai pris l'initiative de concevoir un site web premium spécialement pour votre entreprise.\n\nJe peux vous envoyer gratuitement un lien de prévisualisation, sans aucun engagement. S'il vous plaît, vous pourrez l'acquérir. Sinon, vous n'avez rien à payer.\n\nSouhaitez-vous recevoir le lien de prévisualisation ?";
-const SEND_START_HOUR = parseInt(process.env.SEND_START_HOUR ?? '8', 10);
-const SEND_END_HOUR = parseInt(process.env.SEND_END_HOUR ?? '18', 10);
+const MESSAGE_TEMPLATE_EN =
+  process.env.MESSAGE_TEMPLATE_EN ??
+  "Hello {{name}},\n\nI've taken the initiative to design a premium website specifically for your business.\n\nI can send you a free preview link with no commitment. If you like it, you can get it. If not, you pay nothing.\n\nWould you like to receive the preview link?";
 const CRON_SECRET = process.env.CRON_SECRET;
 
 const MIN_GAP_MS = (3 * 60 - 30) * 1000;
@@ -34,7 +35,12 @@ function isWithinSendWindow(timezone: string): boolean {
   const localHour = parseInt(
     new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: timezone }).format(now)
   );
-  return localHour >= SEND_START_HOUR && localHour < SEND_END_HOUR;
+  // Send 8am–1am. Block only 1:00–7:59.
+  return !(localHour >= 1 && localHour < 8);
+}
+
+function getLang(timezone: string): 'fr' | 'en' {
+  return timezone.includes('Paris') || timezone.includes('Montreal') ? 'fr' : 'en';
 }
 
 export async function GET(req: NextRequest) {
@@ -60,7 +66,7 @@ export async function GET(req: NextRequest) {
 
   // Get active campaigns
   const campRes = await sbFetch('campaigns?select=id,timezone&status=eq.active');
-  const activeCampaigns: { id: string; timezone: string }[] = await campRes.json();
+  const activeCampaigns: { id: string; timezone: string; }[] = await campRes.json();
   if (!activeCampaigns?.length) return NextResponse.json({ skipped: 'no_active_campaigns' });
 
   const ids = activeCampaigns.map((c) => `"${c.id}"`).join(',');
@@ -96,7 +102,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ skipped: 'already_sent', lead_id: lead.id });
   }
 
-  const message = MESSAGE_TEMPLATE.replace('{{name}}', lead.name);
+  const lang = getLang(tz);
+  const template = lang === 'en' ? MESSAGE_TEMPLATE_EN : MESSAGE_TEMPLATE_FR;
+  const message = template.replace('{{name}}', lead.name);
 
   try {
     const waRes = await fetch(`${WA_URL}/send`, {

@@ -71,11 +71,15 @@ app.get('/status', checkSecret, (req, res) => {
   res.json({ connected: isReady, number: connectedNumber });
 });
 
-// GET /qr
-app.get('/qr', checkSecret, (req, res) => {
-  if (isReady) return res.json({ ready: true, number: connectedNumber });
-  if (currentQrDataUrl) return res.json({ qr: currentQrDataUrl });
-  res.json({ waiting: true, message: 'QR not yet generated — try again in a few seconds' });
+// GET /qr  — returns an HTML page so the QR is scannable directly in the browser
+app.get('/qr', (req, res) => {
+  if (isReady) {
+    return res.send(`<html><body style="font-family:sans-serif;text-align:center;padding:40px"><h2>Connected</h2><p>Number: ${connectedNumber}</p></body></html>`);
+  }
+  if (currentQrDataUrl) {
+    return res.send(`<html><body style="background:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><img src="${currentQrDataUrl}" style="width:300px;height:300px"/></body></html>`);
+  }
+  res.send(`<html><body style="font-family:sans-serif;text-align:center;padding:40px"><p>QR not ready yet — <a href="/qr">refresh</a> in a few seconds</p></body></html>`);
 });
 
 // POST /send  { phone: "212612345678", message: "..." }
